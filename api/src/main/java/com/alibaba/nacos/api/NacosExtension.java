@@ -14,36 +14,22 @@
  * limitations under the License.
  */
 
-package com.alibaba.nacos.api.config.filter;
+package com.alibaba.nacos.api;
+
+import com.alibaba.nacos.api.config.filter.IConfigFilter;
+
+import java.util.Properties;
 
 /**
- * Config Response Interface.
+ * The interface of Nacos Extension
  *
- * @author Nacos
+ * <p>DO NOT implement this interface directly, you should extend <code>AbstractNacosExtension</code>.
+ *
+ * @see AbstractNacosExtension
+ * @author luyanbo(RobberPhex)
  */
-public interface IConfigResponse {
+public interface NacosExtension {
+    String getExtensionName();
 
-    /**
-     * get param.
-     *
-     * @param key key
-     * @return value
-     */
-    Object getParameter(String key);
-
-    /**
-     * put param.
-     *
-     * @param key key
-     * @param value value
-     */
-    void putParameter(String key, Object value);
-
-    /**
-     * Get config context.
-     *
-     * @return configContext
-     */
-    IConfigContext getConfigContext();
-
+    IConfigFilter buildConfigFilter(Properties properties);
 }
