@@ -39,6 +39,7 @@ import com.alibaba.nacos.api.remote.request.Request;
 import com.alibaba.nacos.api.remote.response.Response;
 import com.alibaba.nacos.client.config.common.GroupKey;
 import com.alibaba.nacos.client.config.filter.impl.ConfigFilterChainManager;
+import com.alibaba.nacos.client.config.filter.impl.ConfigResponse;
 import com.alibaba.nacos.client.config.utils.ContentUtils;
 import com.alibaba.nacos.client.monitor.MetricsMonitor;
 import com.alibaba.nacos.client.naming.utils.CollectionUtils;
@@ -257,8 +258,8 @@ public class ClientWorker implements Closeable {
      * @throws NacosException exception throw.
      */
     public boolean publishConfig(String dataId, String group, String tenant, String appName, String tag, String betaIps,
-            String content, String casMd5) throws NacosException {
-        return agent.publishConfig(dataId, group, tenant, appName, tag, betaIps, content, casMd5);
+            String content, String encryptedDataKey, String casMd5) throws NacosException {
+        return agent.publishConfig(dataId, group, tenant, appName, tag, betaIps, content, encryptedDataKey, casMd5);
     }
     
     /**
@@ -331,8 +332,8 @@ public class ClientWorker implements Closeable {
                 cache.setTaskId(taskId);
                 // fix issue # 1317
                 if (enableRemoteSyncConfig) {
-                    String[] ct = getServerConfig(dataId, group, tenant, 3000L, false);
-                    cache.setContent(ct[0]);
+                    ConfigResponse response = getServerConfig(dataId, group, tenant, 3000L, false);
+                    cache.setContent(response.getContent());
                 }
             }
             
@@ -358,7 +359,7 @@ public class ClientWorker implements Closeable {
         return cacheMap.get().get(GroupKey.getKeyTenant(dataId, group, tenant));
     }
     
-    public String[] getServerConfig(String dataId, String group, String tenant, long readTimeout, boolean notify)
+    public ConfigResponse getServerConfig(String dataId, String group, String tenant, long readTimeout, boolean notify)
             throws NacosException {
         if (StringUtils.isBlank(group)) {
             group = Constants.DEFAULT_GROUP;
@@ -444,15 +445,15 @@ public class ClientWorker implements Closeable {
     
     private void refreshContentAndCheck(CacheData cacheData, boolean notify) {
         try {
-            String[] ct = getServerConfig(cacheData.dataId, cacheData.group, cacheData.tenant, 3000L, notify);
-            cacheData.setContent(ct[0]);
-            if (null != ct[1]) {
-                cacheData.setType(ct[1]);
+            ConfigResponse response= getServerConfig(cacheData.dataId, cacheData.group, cacheData.tenant, 3000L, notify);
+            cacheData.setContent(response.getContent());
+            if (null != response.getConfigType()) {
+                cacheData.setType(response.getConfigType());
             }
             if (notify) {
                 LOGGER.info("[{}] [data-received] dataId={}, group={}, tenant={}, md5={}, content={}, type={}",
                         agent.getName(), cacheData.dataId, cacheData.group, cacheData.tenant, cacheData.getMd5(),
-                        ContentUtils.truncateContent(ct[0]), ct[1]);
+                        ContentUtils.truncateContent(response.getContent()),response.getConfigType());
             }
             cacheData.checkListenerMd5();
         } catch (Exception e) {
@@ -900,26 +901,33 @@ public class ClientWorker implements Closeable {
         }
         
         @Override
-        public String[] queryConfig(String dataId, String group, String tenant, long readTimeouts, boolean notify)
+        public ConfigResponse queryConfig(String dataId, String group, String tenant, long readTimeouts, boolean notify)
                 throws NacosException {
             ConfigQueryRequest request = ConfigQueryRequest.build(dataId, group, tenant);
             request.putHeader("notify", String.valueOf(notify));
             ConfigQueryResponse response = (ConfigQueryResponse) requestProxy(getOneRunningClient(), request,
                     readTimeouts);
-            
-            String[] ct = new String[2];
+    
+            ConfigResponse configResponse = new ConfigResponse();
             if (response.isSuccess()) {
                 LocalConfigInfoProcessor.saveSnapshot(this.getName(), dataId, group, tenant, response.getContent());
-                ct[0] = response.getContent();
+                configResponse.setContent(response.getContent());
+                String configType;
                 if (StringUtils.isNotBlank(response.getContentType())) {
-                    ct[1] = response.getContentType();
+                    configType = response.getContentType();
                 } else {
-                    ct[1] = ConfigType.TEXT.getType();
+                    configType = ConfigType.TEXT.getType();
                 }
-                return ct;
+                configResponse.setConfigType(configType);
+                String encryptedDataKey = response.getEncryptedDataKey();
+                LocalEncryptedDataKeyProcessor
+                        .saveEncryptDataKeySnapshot(agent.getName(), dataId, group, tenant, encryptedDataKey);
+                configResponse.setEncryptedDataKey(encryptedDataKey);
+                return configResponse;
             } else if (response.getErrorCode() == ConfigQueryResponse.CONFIG_NOT_FOUND) {
                 LocalConfigInfoProcessor.saveSnapshot(this.getName(), dataId, group, tenant, null);
-                return ct;
+                LocalEncryptedDataKeyProcessor.saveEncryptDataKeySnapshot(agent.getName(), dataId, group, tenant, null);
+                return configResponse;
             } else if (response.getErrorCode() == ConfigQueryResponse.CONFIG_QUERY_CONFLICT) {
                 LOGGER.error(
                         "[{}] [sub-server-error] get server config being modified concurrently, dataId={}, group={}, "
@@ -1004,13 +1012,14 @@ public class ClientWorker implements Closeable {
         
         @Override
         public boolean publishConfig(String dataId, String group, String tenant, String appName, String tag,
-                String betaIps, String content, String casMd5) throws NacosException {
+                String betaIps, String content, String encryptedDataKey, String casMd5) throws NacosException {
             try {
                 ConfigPublishRequest request = new ConfigPublishRequest(dataId, group, tenant, content);
                 request.setCasMd5(casMd5);
                 request.putAdditionalParam("tag", tag);
                 request.putAdditionalParam("appName", appName);
                 request.putAdditionalParam("betaIps", betaIps);
+                request.putAdditionalParam("encryptedDataKey", encryptedDataKey);
                 ConfigPublishResponse response = (ConfigPublishResponse) requestProxy(getOneRunningClient(), request);
                 if (!response.isSuccess()) {
                     LOGGER.warn("[{}] [publish-single] fail, dataId={}, group={}, tenant={}, code={}, msg={}",
