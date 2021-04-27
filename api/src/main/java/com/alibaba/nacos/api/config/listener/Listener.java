@@ -23,6 +23,7 @@ import java.util.concurrent.Executor;
  *
  * @author Nacos
  */
+@FunctionalInterface
 public interface Listener {
     
     /**
@@ -30,7 +31,9 @@ public interface Listener {
      *
      * @return Executor
      */
-    Executor getExecutor();
+    default Executor getExecutor() {
+        return null;
+    }
     
     /**
      * Receive config info.
